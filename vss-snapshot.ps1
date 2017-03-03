@@ -22,8 +22,7 @@ Function Get-AttachedVolumes
     }
     Catch
     {
-        Write-Host "Could not access the AWS API, therefore, VolumeId is not available. 
-    Verify that you provided your access keys."  -ForegroundColor Yellow
+        Throw 'ERROR: Could not access the AWS API, therefore, VolumeId is not available. Verify that your instance has an IAM role with permission to describe instances.'
     }
 
     Get-WmiObject -Class Win32_DiskDrive | % {
@@ -59,19 +58,27 @@ Function Get-AttachedVolumes
 #Create a snapshot of each volume attached to this instances
 Get-AttachedVolumes | Where-Object {$_.Boot -eq $false -and $_.VolumeId -ne $NULL} | % {
     Try {
-        If($_.DriveLetter -eq 'NA') {throw "ERROR: This script does not support mount points!"}
-        #Create a VSS Shadow Copy
-        $Response = Invoke-Expression "vssadmin create shadow /for=$($_.DriveLetter)"
-        #Parse the respone to get the Shadow Copy ID
-        $ShadowId = ($Response | Select-String -Pattern 'Shadow Copy ID: {([0-9a-f-]*)}').Matches[0].Groups[1].Value
-        #Create EC2 Snapshot and record meta-data so we can recreate it if needed
-        New-EC2Snapshot -VolumeId $_.VolumeId -Description "VSS enabled snapshot; Device=$($_.Device); Drive Letter=$($_.DriveLetter); ShadowID=$ShadowId"
-        #No need to wait for the snapshot to complete, we can remove the shadow copy
-        Invoke-Expression "vssadmin delete shadows /Shadow='{$ShadowId}' /Quiet"
+        If($_.DriveLetter -eq 'NA') {
+            $Snapshot = New-EC2Snapshot -VolumeId $_.VolumeId -Description "Created by VSS-Snapshot. Skipped shadow copy for mount point volume!"
+            Write-Host "WARNING: Skipping Volume Shadow Copy for $($_.VolumeId). This script does not support mount points. The EBS Snapshot was created!"
+            Write-Host "Creating $($Snapshot.SnapshotId) with description: $($Snapshot.Description)"
+        } 
+        Else
+        {
+            #Create a VSS Shadow Copy
+            $Response = Invoke-Expression "vssadmin create shadow /for=$($_.DriveLetter)"
+            #Parse the respone to get the Shadow Copy ID
+            $ShadowId = ($Response | Select-String -Pattern 'Shadow Copy ID: {([0-9a-f-]*)}').Matches[0].Groups[1].Value
+            #Create EC2 Snapshot and record meta-data so we can recreate it if needed
+            $Snapshot = New-EC2Snapshot -VolumeId $_.VolumeId -Description "Created by VSS-Snapshot. Device=$($_.Device); Drive Letter=$($_.DriveLetter); ShadowID=$ShadowId"
+            Write-Host "Creating $($Snapshot.SnapshotId) with description: $($Snapshot.Description)"
+            #No need to wait for the snapshot to complete, we can remove the shadow copy
+            $Response = Invoke-Expression "vssadmin delete shadows /Shadow='{$ShadowId}' /Quiet"
+        }
     }
     Catch
     {
-        Write-Error $_
+        Throw $_
     }
 } 
 
